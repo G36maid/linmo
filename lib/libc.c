@@ -20,14 +20,14 @@ static inline int byte_is_match(uint32_t w, uint32_t pat)
 }
 
 /* strlen that scans by words whenever possible for efficiency. */
-int32_t strlen(const char *s)
+size_t strlen(const char *s)
 {
     const char *p = s;
 
     /* Align pointer to word boundary (4 bytes) */
     while ((uint32_t) p & 3) {
         if (!*p) /* If null terminator is found byte-by-byte */
-            return (int32_t) (p - s);
+            return (size_t) (p - s);
         p++;
     }
 
@@ -42,7 +42,7 @@ int32_t strlen(const char *s)
     p = (const char *) w;
     while (*p) /* Scan byte-by-byte until the null terminator. */
         p++;
-    return (int32_t) (p - s); /* Return total length. */
+    return (size_t) (p - s); /* Return total length. */
 }
 
 void *memcpy(void *dst, const void *src, uint32_t len)
