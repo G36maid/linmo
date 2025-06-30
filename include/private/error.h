@@ -39,4 +39,4 @@ struct error_code {
     char *const desc;
 };
 
-extern const struct error_code * const perror;
+extern const struct error_code *const perror;
