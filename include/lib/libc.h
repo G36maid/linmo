@@ -70,7 +70,7 @@ char *strncat(char *s1, const char *s2, int32_t n);
 int32_t strcmp(const char *s1, const char *s2);
 int32_t strncmp(const char *s1, const char *s2, int32_t n);
 char *strstr(const char *s1, const char *s2);
-int32_t strlen(const char *s1);
+size_t strlen(const char *s1);
 char *strchr(const char *s1, int32_t c);
 char *strpbrk(const char *s1, const char *s2);
 char *strsep(char **pp, const char *delim);
