@@ -22,6 +22,11 @@ Linmo is a preemptive, multi-tasking operating system kernel built as an educati
 It offers a lightweight environment where all tasks share a single address space,
 keeping the memory footprint to a minimum.
 
+The name Linmo pays tribute to Lin Mo (林默), the mortal name of the Chinese sea goddess [Mazu](https://en.wikipedia.org/wiki/Mazu) (媽祖),
+who was a legendary figure from 10th-century Fujian later deified as the guardian of sailors and fishermen across the Chinese-speaking world.
+Just as Mazu was believed to provide calm and guidance in turbulent seas,
+Linmo aims to offer a structured learning environment within the constrained and often chaotic domain of embedded system education.
+
 Target Platform:
 * RISC-V (32-bit): RV32I architecture, tested with QEMU.
 
