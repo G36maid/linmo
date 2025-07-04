@@ -21,6 +21,8 @@ DEFINES := -DF_CPU=$(F_CLK) \
 TOOLCHAIN_TYPE ?= gnu
 ifeq ($(CROSS_COMPILE),llvm-)
     TOOLCHAIN_TYPE := llvm
+    ## add temp to avoid unused functions
+    CFLAGS += -Wno-error=unused-function
 endif
 
 # Architecture flags
