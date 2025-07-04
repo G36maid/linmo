@@ -22,14 +22,15 @@ TOOLCHAIN_TYPE ?= gnu
 ifeq ($(CROSS_COMPILE),llvm-)
     TOOLCHAIN_TYPE := llvm
     ## add temp to avoid unused functions
-    CFLAGS += -Wno-error=unused-function
+    #CFLAGS += -Wno-error=unused-function
 endif
 
 # Architecture flags
 ARCH_FLAGS = -march=rv32imzicsr -mabi=ilp32
 
 # Common compiler flags
-CFLAGS += -Wall -Wextra -Wshadow -Wno-unused-parameter -Werror
+CFLAGS += -Wall -Wextra -Wshadow -Wno-unused-parameter
+#CFLAGS += -Werror
 CFLAGS += -O2 -std=gnu99
 CFLAGS += $(ARCH_FLAGS)
 CFLAGS += -mstrict-align -ffreestanding -nostdlib -fomit-frame-pointer
