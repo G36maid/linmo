@@ -21,7 +21,7 @@ KERNEL_OBJS := timer.o mqueue.o pipe.o semaphore.o mutex.o error.o syscall.o tas
 KERNEL_OBJS := $(addprefix $(BUILD_KERNEL_DIR)/,$(KERNEL_OBJS))
 deps += $(KERNEL_OBJS:%.o=%.o.d)
 
-LIB_OBJS := ctype.o malloc.o memory.o random.o stdio.o string.o queue.o
+LIB_OBJS := ctype.o malloc.o math.o memory.o random.o stdio.o string.o queue.o
 LIB_OBJS := $(addprefix $(BUILD_LIB_DIR)/,$(LIB_OBJS))
 deps += $(LIB_OBJS:%.o=%.o.d)
 

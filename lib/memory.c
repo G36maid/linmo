@@ -122,9 +122,3 @@ int32_t memcmp(const void *cs, const void *ct, uint32_t n)
      */
     return (n == 0) ? 0 : ((*r1 < *r2) ? -1 : 1);
 }
-
-/* Returns the absolute value of an integer. */
-int32_t abs(int32_t n)
-{
-    return n >= 0 ? n : -n;
-}
