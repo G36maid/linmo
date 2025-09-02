@@ -1,0 +1,121 @@
+name: Linmo CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  matrix-tests:
+    runs-on: ubuntu-24.04
+    name: Test on ${{ matrix.toolchain }} toolchain
+
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [gnu, llvm]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install base dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential qemu-system-riscv32 wget
+
+      - name: Setup ${{ matrix.toolchain }} toolchain
+        run: .ci/setup-toolchain.sh ${{ matrix.toolchain }}
+
+      - name: Verify toolchain installation
+        run: |
+          if [ "${{ matrix.toolchain }}" = "gnu" ]; then
+            riscv32-unknown-elf-gcc --version
+          else
+            # LLVM toolchain fallback: try system llvm-objdump
+            riscv32-unknown-elf-clang --version || clang --version
+            riscv32-unknown-elf-llvm-objdump --version || llvm-objdump --version
+          fi
+          qemu-system-riscv32 --version
+
+      - name: Build Kernel
+        run: |
+          make clean
+          make
+        env:
+          TOOLCHAIN_TYPE: ${{ matrix.toolchain }}
+
+      - name: Run All Apps
+        id: test
+        run: |
+          output=$(.ci/run-app-tests.sh)
+          echo "TEST_OUTPUT<<EOF" >> $GITHUB_OUTPUT
+          echo "$output" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        env:
+          TOOLCHAIN_TYPE: ${{ matrix.toolchain }}
+
+      - name: Run Functional Tests
+        id: functional_test
+        run: |
+          output=$(.ci/run-functional-tests.sh)
+          echo "FUNCTIONAL_TEST_OUTPUT<<EOF" >> $GITHUB_OUTPUT
+          echo "$output" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        env:
+          TOOLCHAIN_TYPE: ${{ matrix.toolchain }}
+
+      - name: Collect Test Data
+        run: |
+          .ci/ci-tools.sh collect-data "${{ matrix.toolchain }}" "${{ steps.test.outputs.TEST_OUTPUT }}" "${{ steps.functional_test.outputs.FUNCTIONAL_TEST_OUTPUT }}"
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.toolchain }}
+          path: test-results/
+          retention-days: 1
+
+  # Comprehensive test summary with detailed reporting
+  test-summary:
+    runs-on: ubuntu-24.04
+    needs: matrix-tests
+    if: always()
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-results-*
+          path: all-test-results/
+
+      - name: Generate Test Summary
+        run: |
+          .ci/ci-tools.sh aggregate all-test-results test-summary.toml
+          cat test-summary.toml
+
+      - name: Upload Test Summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-summary
+          path: test-summary.toml
+          retention-days: 30
+
+      - name: Comment PR with Formatted Summary
+        if: github.event_name == 'pull_request'
+        run: |
+          .ci/ci-tools.sh post-comment test-summary.toml ${{ github.event.number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Final Status Check
+        run: |
+          if [ "${{ needs.matrix-tests.result }}" = "success" ]; then
+            echo "All tests passed"
+          else
+            echo "Tests failed"
+            exit 1
+          fi
