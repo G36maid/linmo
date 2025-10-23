@@ -173,12 +173,8 @@ void print_test_results(void)
     printf("Tests passed: %d\n", tests_passed);
     printf("Tests failed: %d\n", tests_failed);
     printf("Total tests: %d\n", tests_passed + tests_failed);
+    printf("Overall: %s\n", (tests_failed == 0) ? "PASS" : "FAIL");
 
-    if (tests_failed == 0) {
-        printf("All tests PASSED!\n");
-    } else {
-        printf("Some tests FAILED!\n");
-    }
 }
 
 /* Simple idle task to prevent "no ready tasks" panic */
