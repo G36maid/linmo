@@ -49,31 +49,41 @@ collect_data() {
 	mkdir -p test-results
 	echo "$toolchain" >test-results/toolchain
 
-	# Extract app data
-	echo "$test_output" | grep "APP_STATUS:" | sed 's/APP_STATUS://' >test-results/apps_data || touch test-results/apps_data
-
-	# Debug: Check if functional output was received
-	if [ -n "$functional_output" ]; then
-		echo "[DEBUG] Functional output received (length: ${#functional_output})"
-		local func_test_count=$(echo "$functional_output" | grep -c "FUNCTIONAL_TEST:" || echo "0")
-		local func_crit_count=$(echo "$functional_output" | grep -c "FUNCTIONAL_CRITERIA:" || echo "0")
-		echo "[DEBUG] Found $func_test_count FUNCTIONAL_TEST lines"
-		echo "[DEBUG] Found $func_crit_count FUNCTIONAL_CRITERIA lines"
-
-		# Show last 50 lines to see if parseable output is present
-		echo "[DEBUG] Last 50 lines of functional output:"
-		echo "$functional_output" | tail -50
+	# Extract JSON data from app tests output
+	if echo "$test_output" | grep -q "=== JSON_OUTPUT ==="; then
+		echo "[DEBUG] Found JSON_OUTPUT marker in app tests"
+		json_section=$(echo "$test_output" | sed -n '/=== JSON_OUTPUT ===/,/\[DEBUG\] Finished emitting JSON output/p' | grep -v -E "=== JSON_OUTPUT ===|\[DEBUG\]")
+		if [ -n "$json_section" ]; then
+			echo "$json_section" > test-results/apps_data.json
+			echo "[DEBUG] Saved apps JSON data ($(echo "$json_section" | wc -l) lines)"
+		else
+			echo "[]" > test-results/apps_data.json
+		fi
 	else
-		echo "[DEBUG] No functional output received"
+		echo "[DEBUG] No JSON_OUTPUT marker found in app tests, creating empty JSON"
+		echo "[]" > test-results/apps_data.json
 	fi
 
-	# Extract functional data (both overall and criteria)
+	# Extract JSON data from functional tests output
 	if [ -n "$functional_output" ]; then
-		echo "$functional_output" | grep "FUNCTIONAL_TEST:" | sed 's/FUNCTIONAL_TEST://' >test-results/functional_data || touch test-results/functional_data
-		echo "$functional_output" | grep "FUNCTIONAL_CRITERIA:" | sed 's/FUNCTIONAL_CRITERIA://' >test-results/functional_criteria_data || touch test-results/functional_criteria_data
+		echo "[DEBUG] Functional output received (length: ${#functional_output})"
+		
+		if echo "$functional_output" | grep -q "=== JSON_OUTPUT ==="; then
+			echo "[DEBUG] Found JSON_OUTPUT marker in functional tests"
+			json_section=$(echo "$functional_output" | sed -n '/=== JSON_OUTPUT ===/,/\[DEBUG\] Finished emitting JSON output/p' | grep -v -E "=== JSON_OUTPUT ===|\[DEBUG\]")
+			if [ -n "$json_section" ]; then
+				echo "$json_section" > test-results/functional_data.json
+				echo "[DEBUG] Saved functional JSON data ($(echo "$json_section" | wc -l) lines)"
+			else
+				echo "[]" > test-results/functional_data.json
+			fi
+		else
+			echo "[DEBUG] No JSON_OUTPUT marker found in functional tests, creating empty JSON"
+			echo "[]" > test-results/functional_data.json
+		fi
 	else
-		touch test-results/functional_data
-		touch test-results/functional_criteria_data
+		echo "[DEBUG] No functional output received"
+		echo "[]" > test-results/functional_data.json
 	fi
 
 	# Determine exit codes
@@ -91,7 +101,7 @@ collect_data() {
 # Result aggregation function
 aggregate_results() {
 	local results_dir=${1:-all-test-results}
-	local output_file=${2:-test-summary.toml}
+	local output_file=${2:-test-summary.json}
 
 	if [ ! -d "$results_dir" ]; then
 		echo "Error: Results directory not found: $results_dir"
@@ -102,7 +112,9 @@ aggregate_results() {
 	gnu_build="failed" gnu_crash="failed" gnu_functional="failed"
 	llvm_build="failed" llvm_crash="failed" llvm_functional="failed"
 	overall="failed"
-	apps_data="" functional_data="" functional_criteria_data=""
+
+	# Initialize JSON data collections
+	declare -A apps_json functional_json
 
 	# Process artifacts
 	for artifact_dir in "$results_dir"/test-results-*; do
@@ -129,23 +141,18 @@ aggregate_results() {
 			;;
 		esac
 
-		# Collect data with toolchain prefix
-		if [ -f "$artifact_dir/apps_data" ] && [ -s "$artifact_dir/apps_data" ]; then
-			while read -r line; do
-				[ -n "$line" ] && apps_data="$apps_data ${toolchain}_${line}"
-			done <"$artifact_dir/apps_data"
+		# Collect apps JSON data
+		if [ -f "$artifact_dir/apps_data.json" ] && [ -s "$artifact_dir/apps_data.json" ]; then
+			apps_json["$toolchain"]=$(cat "$artifact_dir/apps_data.json")
+		else
+			apps_json["$toolchain"]="[]"
 		fi
 
-		if [ -f "$artifact_dir/functional_data" ] && [ -s "$artifact_dir/functional_data" ]; then
-			while read -r line; do
-				[ -n "$line" ] && functional_data="$functional_data ${toolchain}_${line}"
-			done <"$artifact_dir/functional_data"
-		fi
-
-		if [ -f "$artifact_dir/functional_criteria_data" ] && [ -s "$artifact_dir/functional_criteria_data" ]; then
-			while read -r line; do
-				[ -n "$line" ] && functional_criteria_data="$functional_criteria_data ${toolchain}_${line}"
-			done <"$artifact_dir/functional_criteria_data"
+		# Collect functional tests JSON data
+		if [ -f "$artifact_dir/functional_data.json" ] && [ -s "$artifact_dir/functional_data.json" ]; then
+			functional_json["$toolchain"]=$(cat "$artifact_dir/functional_data.json")
+		else
+			functional_json["$toolchain"]="[]"
 		fi
 	done
 
@@ -155,93 +162,84 @@ aggregate_results() {
 		overall="passed"
 	fi
 
-	apps_data=$(echo "$apps_data" | xargs)
-	functional_data=$(echo "$functional_data" | xargs)
-	functional_criteria_data=$(echo "$functional_criteria_data" | xargs)
+	# Create base JSON structure
+	base_json=$(jq -n \
+		--arg overall_status "$overall" \
+		--arg timestamp "$(date -Iseconds)" \
+		--arg architecture "riscv32" \
+		--arg timeout "5" \
+		--arg gnu_build "$gnu_build" \
+		--arg gnu_crash "$gnu_crash" \
+		--arg gnu_functional "$gnu_functional" \
+		--arg llvm_build "$llvm_build" \
+		--arg llvm_crash "$llvm_crash" \
+		--arg llvm_functional "$llvm_functional" \
+		'{
+			summary: {
+				status: $overall_status,
+				timestamp: $timestamp
+			},
+			info: {
+				architecture: $architecture,
+				timeout: ($timeout | tonumber)
+			},
+			gnu: {
+				build: $gnu_build,
+				crash: $gnu_crash,
+				functional: $gnu_functional,
+				apps: {},
+				functional_tests: {},
+				functional_criteria: {}
+			},
+			llvm: {
+				build: $llvm_build,
+				crash: $llvm_crash,
+				functional: $llvm_functional,
+				apps: {},
+				functional_tests: {},
+				functional_criteria: {}
+			}
+		}')
 
-	# Generate TOML
-	cat >"$output_file" <<EOF
-[summary]
-status = "$overall"
-timestamp = "$(date -Iseconds)"
+	# Process apps data for each toolchain
+	for toolchain in gnu llvm; do
+		if [ -n "${apps_json[$toolchain]}" ] && [ "${apps_json[$toolchain]}" != "[]" ]; then
+			# Add app results from JSON
+			base_json=$(echo "$base_json" | jq --arg tc "$toolchain" --argjson apps_data "${apps_json[$toolchain]}" '
+				.[$tc].apps = ($apps_data | map({(.app_name): .status}) | add // {})
+			')
+		fi
+	done
 
-[info]
-architecture = "riscv32"
-timeout = 5
+	# Process functional tests data for each toolchain  
+	for toolchain in gnu llvm; do
+		if [ -n "${functional_json[$toolchain]}" ] && [ "${functional_json[$toolchain]}" != "[]" ]; then
+			# Add functional test results and criteria from JSON
+			base_json=$(echo "$base_json" | jq --arg tc "$toolchain" --argjson func_data "${functional_json[$toolchain]}" '
+				.[$tc].functional_tests = ($func_data | map({(.test_name): .overall_status}) | add // {}) |
+				.[$tc].functional_criteria = ($func_data | map(
+					.test_name as $test_name | .criteria // [] | map({("\($test_name):\(.name)"): .status})
+				) | flatten | add // {})
+			')
+		fi
+	done
 
-[gnu]
-build = "$gnu_build"
-crash = "$gnu_crash"
-functional = "$gnu_functional"
-
-[llvm]
-build = "$llvm_build"
-crash = "$llvm_crash"
-functional = "$llvm_functional"
-EOF
-
-	# Add apps sections
-	if [ -n "$apps_data" ]; then
-		echo "" >>"$output_file"
-		echo "[gnu.apps]" >>"$output_file"
-		echo "$apps_data" | tr ' ' '\n' | grep "^gnu_" | sed 's/gnu_//; s/\(.*\)=\(.*\)/"\1" = "\2"/' >>"$output_file" || true
-		echo "" >>"$output_file"
-		echo "[llvm.apps]" >>"$output_file"
-		echo "$apps_data" | tr ' ' '\n' | grep "^llvm_" | sed 's/llvm_//; s/\(.*\)=\(.*\)/"\1" = "\2"/' >>"$output_file" || true
-	fi
-
-	# Add functional sections
-	if [ -n "$functional_data" ]; then
-		echo "" >>"$output_file"
-		echo "[gnu.functional_tests]" >>"$output_file"
-		echo "$functional_data" | tr ' ' '\n' | grep "^gnu_" | sed 's/gnu_//; s/\(.*\)=\(.*\)/"\1" = "\2"/' >>"$output_file" || true
-		echo "" >>"$output_file"
-		echo "[llvm.functional_tests]" >>"$output_file"
-		echo "$functional_data" | tr ' ' '\n' | grep "^llvm_" | sed 's/llvm_//; s/\(.*\)=\(.*\)/"\1" = "\2"/' >>"$output_file" || true
-	fi
-
-	# Add functional criteria sections
-	if [ -n "$functional_criteria_data" ]; then
-		echo "" >>"$output_file"
-		echo "[gnu.functional_criteria]" >>"$output_file"
-		echo "$functional_criteria_data" | tr ' ' '\n' | grep "^gnu_" | sed 's/gnu_//; s/\(.*\)=\(.*\)/"\1" = "\2"/' >>"$output_file" || true
-		echo "" >>"$output_file"
-		echo "[llvm.functional_criteria]" >>"$output_file"
-		echo "$functional_criteria_data" | tr ' ' '\n' | grep "^llvm_" | sed 's/llvm_//; s/\(.*\)=\(.*\)/"\1" = "\2"/' >>"$output_file" || true
-	fi
+	# Write JSON to file
+	echo "$base_json" | jq '.' > "$output_file"
 
 	echo "Results aggregated into $output_file"
 	[ "$overall" = "passed" ] && exit 0 || exit 1
 }
 
-# TOML parsing helpers
-get_value() {
-	local section=$1 key=$2 file=$3
-	awk -v section="$section" -v key="$key" '
-    BEGIN { in_section = 0 }
-    /^\[.*\]/ { in_section = 0; if ($0 == "[" section "]") in_section = 1 }
-    in_section && /^[a-zA-Z_]/ {
-        split($0, parts, " = "); if (parts[1] == key) { gsub(/"/, "", parts[2]); print parts[2] }
-    }' "$file"
+# JSON parsing helpers
+get_json_value() {
+	local path=$1 file=$2
+	jq -r "$path // empty" "$file"
 }
 
-get_section_data() {
-	local section=$1 file=$2
-	awk -v section="$section" '
-    BEGIN { in_section = 0 }
-    /^\[.*\]/ { in_section = 0; if ($0 == "[" section "]") in_section = 1 }
-    in_section && /=/ && !/^\[/ { gsub(/^[ \t]+/, ""); print $0 }
-    ' "$file"
-}
-
-# Extract key from TOML line (strips quotes)
-get_toml_key() {
-	echo "$1" | sed 's/^"\([^"]*\)" = ".*"$/\1/'
-}
-
-# Extract value from TOML line (strips quotes)
-get_toml_value() {
-	echo "$1" | sed 's/^"[^"]*" = "\(.*\)"$/\1/'
+get_json_object_keys() {
+	local path=$1 file=$2
+	jq -r "$path | keys[]?" "$file" 2>/dev/null || true
 }
 
 get_symbol() {
@@ -252,22 +250,22 @@ get_symbol() {
 
 # PR comment formatting
 format_comment() {
-	local toml_file=${1:-test-summary.toml}
+	local json_file=${1:-test-summary.json}
 
-	if [ ! -f "$toml_file" ]; then
-		echo "Error: TOML file not found: $toml_file"
+	if [ ! -f "$json_file" ]; then
+		echo "Error: JSON file not found: $json_file"
 		exit 1
 	fi
 
-	# Extract basic info
-	overall_status=$(get_value "summary" "status" "$toml_file")
-	timestamp=$(get_value "summary" "timestamp" "$toml_file")
-	gnu_build=$(get_value "gnu" "build" "$toml_file")
-	gnu_crash=$(get_value "gnu" "crash" "$toml_file")
-	gnu_functional=$(get_value "gnu" "functional" "$toml_file")
-	llvm_build=$(get_value "llvm" "build" "$toml_file")
-	llvm_crash=$(get_value "llvm" "crash" "$toml_file")
-	llvm_functional=$(get_value "llvm" "functional" "$toml_file")
+	# Extract basic info using jq
+	overall_status=$(get_json_value '.summary.status' "$json_file")
+	timestamp=$(get_json_value '.summary.timestamp' "$json_file")
+	gnu_build=$(get_json_value '.gnu.build' "$json_file")
+	gnu_crash=$(get_json_value '.gnu.crash' "$json_file")
+	gnu_functional=$(get_json_value '.gnu.functional' "$json_file")
+	llvm_build=$(get_json_value '.llvm.build' "$json_file")
+	llvm_crash=$(get_json_value '.llvm.crash' "$json_file")
+	llvm_functional=$(get_json_value '.llvm.functional' "$json_file")
 
 	# Generate comment
 	cat <<EOF
@@ -285,113 +283,61 @@ format_comment() {
 EOF
 
 	# Apps section
-	gnu_apps=$(get_section_data "gnu.apps" "$toml_file")
-	llvm_apps=$(get_section_data "llvm.apps" "$toml_file")
+	gnu_apps_keys=$(get_json_object_keys '.gnu.apps' "$json_file")
+	llvm_apps_keys=$(get_json_object_keys '.llvm.apps' "$json_file")
 
-	if [ -n "$gnu_apps" ] || [ -n "$llvm_apps" ]; then
+	if [ -n "$gnu_apps_keys" ] || [ -n "$llvm_apps_keys" ]; then
 		echo ""
 		echo "### Application Tests"
 		echo ""
 		echo "| App | GNU | LLVM |"
 		echo "|-----|-----|------|"
 
-		all_apps=""
-		while IFS= read -r line; do
-			[ -n "$line" ] && all_apps="$all_apps $(get_toml_key "$line")"
-		done <<-EOF
-			$gnu_apps
-		EOF
-		while IFS= read -r line; do
-			[ -n "$line" ] && all_apps="$all_apps $(get_toml_key "$line")"
-		done <<-EOF
-			$llvm_apps
-		EOF
+		# Get all unique app names
+		all_apps=$(echo -e "$gnu_apps_keys\n$llvm_apps_keys" | sort -u | grep -v '^$')
 
-		for app in $(echo "$all_apps" | tr ' ' '\n' | sort -u); do
-			gnu_status=""
-			llvm_status=""
-			while IFS= read -r line; do
-				[ -z "$line" ] && continue
-				key=$(get_toml_key "$line")
-				if [ "$key" = "$app" ]; then
-					gnu_status=$(get_toml_value "$line")
-					break
-				fi
-			done <<-EOF
-				$gnu_apps
-			EOF
-			while IFS= read -r line; do
-				[ -z "$line" ] && continue
-				key=$(get_toml_key "$line")
-				if [ "$key" = "$app" ]; then
-					llvm_status=$(get_toml_value "$line")
-					break
-				fi
-			done <<-EOF
-				$llvm_apps
-			EOF
+		while IFS= read -r app; do
+			[ -z "$app" ] && continue
+			gnu_status=$(get_json_value ".gnu.apps[\"$app\"]" "$json_file")
+			llvm_status=$(get_json_value ".llvm.apps[\"$app\"]" "$json_file")
+			[ -z "$gnu_status" ] && gnu_status=""
+			[ -z "$llvm_status" ] && llvm_status=""
 			echo "| \`$app\` | $(get_symbol "$gnu_status") $gnu_status | $(get_symbol "$llvm_status") $llvm_status |"
-		done
+		done <<< "$all_apps"
 	fi
 
 	# Functional tests section (detailed criteria)
-	gnu_functional_criteria=$(get_section_data "gnu.functional_criteria" "$toml_file")
-	llvm_functional_criteria=$(get_section_data "llvm.functional_criteria" "$toml_file")
+	gnu_functional_criteria_keys=$(get_json_object_keys '.gnu.functional_criteria' "$json_file")
+	llvm_functional_criteria_keys=$(get_json_object_keys '.llvm.functional_criteria' "$json_file")
 
-	if [ -n "$gnu_functional_criteria" ] || [ -n "$llvm_functional_criteria" ]; then
+	if [ -n "$gnu_functional_criteria_keys" ] || [ -n "$llvm_functional_criteria_keys" ]; then
 		echo ""
 		echo "### Functional Test Details"
 		echo ""
 		echo "| Test | GNU | LLVM |"
 		echo "|------|-----|------|"
 
-		all_criteria=""
-		while IFS= read -r line; do
-			[ -n "$line" ] && all_criteria="$all_criteria $(get_toml_key "$line")"
-		done <<-EOF
-			$gnu_functional_criteria
-		EOF
-		while IFS= read -r line; do
-			[ -n "$line" ] && all_criteria="$all_criteria $(get_toml_key "$line")"
-		done <<-EOF
-			$llvm_functional_criteria
-		EOF
+		# Get all unique criteria names
+		all_criteria=$(echo -e "$gnu_functional_criteria_keys\n$llvm_functional_criteria_keys" | sort -u | grep -v '^$')
 
-		for criteria in $(echo "$all_criteria" | tr ' ' '\n' | sort -u); do
-			gnu_status=""
-			llvm_status=""
-			while IFS= read -r line; do
-				[ -z "$line" ] && continue
-				key=$(get_toml_key "$line")
-				if [ "$key" = "$criteria" ]; then
-					gnu_status=$(get_toml_value "$line")
-					break
-				fi
-			done <<-EOF
-				$gnu_functional_criteria
-			EOF
-			while IFS= read -r line; do
-				[ -z "$line" ] && continue
-				key=$(get_toml_key "$line")
-				if [ "$key" = "$criteria" ]; then
-					llvm_status=$(get_toml_value "$line")
-					break
-				fi
-			done <<-EOF
-				$llvm_functional_criteria
-			EOF
+		while IFS= read -r criteria; do
+			[ -z "$criteria" ] && continue
+			gnu_status=$(get_json_value ".gnu.functional_criteria[\"$criteria\"]" "$json_file")
+			llvm_status=$(get_json_value ".llvm.functional_criteria[\"$criteria\"]" "$json_file")
+			[ -z "$gnu_status" ] && gnu_status=""
+			[ -z "$llvm_status" ] && llvm_status=""
 			echo "| \`$criteria\` | $(get_symbol "$gnu_status") $gnu_status | $(get_symbol "$llvm_status") $llvm_status |"
-		done
+		done <<< "$all_criteria"
 	fi
 
 	echo ""
 	echo "---"
-	echo "*Report generated from \`$toml_file\`*"
+	echo "*Report generated from \`$json_file\`*"
 }
 
 # Post PR comment
 post_comment() {
-	local toml_file=${1:-test-summary.toml}
+	local json_file=${1:-test-summary.json}
 	local pr_number=${2:-$GITHUB_PR_NUMBER}
 
 	if [ -z "$pr_number" ]; then
@@ -399,8 +345,8 @@ post_comment() {
 		exit 1
 	fi
 
-	if [ ! -f "$toml_file" ]; then
-		echo "Error: TOML file not found: $toml_file"
+	if [ ! -f "$json_file" ]; then
+		echo "Error: JSON file not found: $json_file"
 		exit 1
 	fi
 
@@ -409,7 +355,7 @@ post_comment() {
 		exit 1
 	fi
 
-	comment_body=$(format_comment "$toml_file")
+	comment_body=$(format_comment "$json_file")
 	temp_file=$(mktemp)
 	echo "$comment_body" >"$temp_file"
 	gh pr comment "$pr_number" --body-file "$temp_file"
@@ -419,10 +365,10 @@ post_comment() {
 
 # Print report
 print_report() {
-	local toml_file=${1:-test-summary.toml}
+	local json_file=${1:-test-summary.json}
 
-	if [ ! -f "$toml_file" ]; then
-		echo "Error: TOML file not found: $toml_file"
+	if [ ! -f "$json_file" ]; then
+		echo "Error: JSON file not found: $json_file"
 		exit 1
 	fi
 
@@ -430,10 +376,10 @@ print_report() {
 	echo "Linmo CI Test Report"
 	echo "========================================="
 	echo ""
-	cat "$toml_file"
+	cat "$json_file"
 	echo ""
 	echo "========================================="
-	echo "Report generated from: $toml_file"
+	echo "Report generated from: $json_file"
 	echo "========================================="
 }
 

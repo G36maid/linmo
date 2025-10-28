@@ -25,7 +25,7 @@ jobs:
       - name: Install base dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential qemu-system-riscv32 wget
+          sudo apt-get install -y build-essential qemu-system-riscv32 wget jq
 
       - name: Setup ${{ matrix.toolchain }} toolchain
         run: .ci/setup-toolchain.sh ${{ matrix.toolchain }}
@@ -93,6 +93,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
       - name: Download Test Results
         uses: actions/download-artifact@v4
         with:
@@ -102,33 +105,33 @@ jobs:
       - name: Generate Test Summary
         continue-on-error: true
         run: |
-          .ci/ci-tools.sh aggregate all-test-results test-summary.toml
-          cat test-summary.toml
+          .ci/ci-tools.sh aggregate all-test-results test-summary.json
+          cat test-summary.json
 
       - name: Upload Test Summary
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-summary
-          path: test-summary.toml
+          path: test-summary.json
           retention-days: 30
 
       - name: Comment PR with Formatted Summary
         if: always() && github.event_name == 'pull_request'
         continue-on-error: true
         run: |
-          .ci/ci-tools.sh post-comment test-summary.toml ${{ github.event.number }}
+          .ci/ci-tools.sh post-comment test-summary.json ${{ github.event.number }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Final Status Check
         run: |
-          if [ ! -f test-summary.toml ]; then
-            echo "Error: test-summary.toml not found"
+          if [ ! -f test-summary.json ]; then
+            echo "Error: test-summary.json not found"
             exit 1
           fi
 
-          overall_status=$(grep -A 1 '^\[summary\]' test-summary.toml | grep 'status =' | cut -d'"' -f2)
+          overall_status=$(jq -r '.summary.status' test-summary.json)
           echo "Overall test status: $overall_status"
 
           if [ "$overall_status" = "passed" ]; then

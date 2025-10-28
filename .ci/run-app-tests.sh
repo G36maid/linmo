@@ -4,10 +4,15 @@
 TIMEOUT=5
 TOOLCHAIN_TYPE=${TOOLCHAIN_TYPE:-gnu}
 
+# Initialize JSON results array
+JSON_RESULTS="[]"
+
 # Test a single app: build, run, check
 # Returns: 0=passed, 1=failed, 2=build_failed
+# Also updates JSON_RESULTS with test result
 test_app() {
 	local app=$1
+	local status details=""
 
 	echo "=== Testing $app ($TOOLCHAIN_TYPE) ==="
 
@@ -16,6 +21,9 @@ test_app() {
 	make clean >/dev/null 2>&1
 	if ! make "$app" TOOLCHAIN_TYPE="$TOOLCHAIN_TYPE" >/dev/null 2>&1; then
 		echo "[!] Build failed"
+		status="build_failed"
+		details="Build compilation failed"
+		add_test_result "$app" "$status" "$details"
 		return 2
 	fi
 
@@ -28,14 +36,45 @@ test_app() {
 	# Check phase
 	if echo "$output" | grep -qiE "(trap|exception|fault|panic|illegal|segfault)"; then
 		echo "[!] Crash detected"
+		status="failed"
+		details="Crash detected in output"
+		add_test_result "$app" "$status" "$details"
 		return 1
 	elif [ $exit_code -eq 124 ] || [ $exit_code -eq 0 ]; then
 		echo "[✓] Passed"
+		status="passed"
+		add_test_result "$app" "$status" ""
 		return 0
 	else
 		echo "[!] Exit code $exit_code"
+		status="failed" 
+		details="Non-zero exit code: $exit_code"
+		add_test_result "$app" "$status" "$details"
 		return 1
 	fi
+}
+
+# Add test result to JSON array
+add_test_result() {
+	local app_name="$1"
+	local status="$2"
+	local details="$3"
+	
+	local new_result
+	if [ -n "$details" ]; then
+		new_result=$(jq -n \
+			--arg app_name "$app_name" \
+			--arg status "$status" \
+			--arg details "$details" \
+			'{app_name: $app_name, status: $status, details: $details}')
+	else
+		new_result=$(jq -n \
+			--arg app_name "$app_name" \
+			--arg status "$status" \
+			'{app_name: $app_name, status: $status}')
+	fi
+	
+	JSON_RESULTS=$(echo "$JSON_RESULTS" | jq --argjson result "$new_result" '. + [$result]')
 }
 
 # Auto-discover apps if none provided
@@ -60,7 +99,7 @@ echo "[+] Testing apps: $APPS"
 echo "[+] Toolchain: $TOOLCHAIN_TYPE"
 echo ""
 
-# Track results
+# Track results for summary
 PASSED_APPS=""
 FAILED_APPS=""
 BUILD_FAILED_APPS=""
@@ -76,24 +115,16 @@ for app in $APPS; do
 	echo ""
 done
 
-# Summary
+# Summary (human readable)
 echo "=== STEP 2 APP TEST RESULTS ==="
 [ -n "$PASSED_APPS" ] && echo "[✓] PASSED:$PASSED_APPS"
 [ -n "$FAILED_APPS" ] && echo "[!] FAILED (crashes):$FAILED_APPS"
 [ -n "$BUILD_FAILED_APPS" ] && echo "[!] BUILD FAILED:$BUILD_FAILED_APPS"
 
-# Parseable output
+# JSON output
 echo ""
-echo "=== PARSEABLE_OUTPUT ==="
-for app in $APPS; do
-	if echo "$PASSED_APPS" | grep -qw "$app"; then
-		echo "APP_STATUS:$app=passed"
-	elif echo "$FAILED_APPS" | grep -qw "$app"; then
-		echo "APP_STATUS:$app=failed"
-	elif echo "$BUILD_FAILED_APPS" | grep -qw "$app"; then
-		echo "APP_STATUS:$app=build_failed"
-	fi
-done
+echo "=== JSON_OUTPUT ==="
+echo "$JSON_RESULTS" | jq '.'
 
 # Exit status
 if [ -n "$FAILED_APPS" ] || [ -n "$BUILD_FAILED_APPS" ]; then
