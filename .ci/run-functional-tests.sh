@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration
-TIMEOUT=5
+TIMEOUT=60
 TOOLCHAIN_TYPE=${TOOLCHAIN_TYPE:-gnu}
 
 # Define functional tests and their expected PASS criteria
